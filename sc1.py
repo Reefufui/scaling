@@ -1,5 +1,8 @@
+import matplotlib
 import numpy as np
 import itertools
+
+from skimage import io
 
 def get_y_img(raw_img):
     h, w, c = raw_img.shape
@@ -7,11 +10,11 @@ def get_y_img(raw_img):
     
     xs, ys = np.arange(h), np.arange(w)
     for x, y in itertools.product(xs, ys):
-        y_img[x, y] = np.dot(raw_img[x, y], np.array([0.299, 0.587, 0.114]))
+        y_img[x, y] = np.dot(raw_img[x, y], np.array([0.229, 0.587, 0.111]))
     
-    return y_img.astype('float64')
+    return y_img
 
-def get_e_img(y_img, mask):
+def get_e_img(y_img):
     h, w = y_img.shape
     xs, ys = np.arange(1, w + 1), np.arange(1, h + 1)
     e_img = np.zeros((h + 2, w + 2), dtype='float64')
@@ -21,16 +24,13 @@ def get_e_img(y_img, mask):
         dx = img[y + 1, x] - img[y - 1, x]
         dy = img[y, x + 1] - img[y, x - 1]
         e_img[y, x] = np.sqrt(dx*dx + dy*dy)
-
-    e_img = e_img[1:-1, 1:-1]
-    e_img += mask * (h * w * 256.0)
     
-    return e_img.astype('float64')
+    return e_img[1:-1, 1:-1]
 
 def get_seam_matrix(y_img, mode='horizontal shrink'):
     h, w = y_img.shape
     xs, ys = np.arange(1, w + 1), np.arange(1, h + 1)
-    result = np.pad(y_img, pad_width=1, mode='constant', constant_values=(np.inf))
+    result = np.pad(y_img, pad_width=1, mode='constant', constant_values=(10000000))
     
     mode = mode.split()[0]
     strides = np.zeros((h, w), dtype = "int")
@@ -55,37 +55,36 @@ def get_seam_matrix(y_img, mode='horizontal shrink'):
     
     result = result[1:-1, 1:-1]
 
-    return result.astype('float64'), strides
+    return result, strides
 
 def get_seam_mask(seam_matrix, strides, mode='horizontal shrink'):
-
     h, w = seam_matrix.shape
-    seam_mask = np.zeros((h, w), dtype='float64')
-
+    seam_mask = np.zeros((h, w), dtype='int')
+    
     index_of_minimal = lambda arr : np.where(arr == np.amin(arr))[0][0]
     mode = mode.split()[0]
     x, y = w - 1, h - 1
-
+    
     if mode == 'horizontal':
-        x = index_of_minimal(seam_matrix[y, ...])
+        x = index_of_minimal(seam_matrix[y])
         seam_mask[y, x] = 1
         while y:
-            x += strides[y, x]
             y -= 1
+            x += strides[y, x]
             seam_mask[y, x] = 1
 
     elif mode == 'vertical':
         y = index_of_minimal(seam_matrix[..., x])
         seam_mask[y, x] = 1
         while x:
-            y += strides[y, x]
             x -= 1
+            y += strides[y, x]
             seam_mask[y, x] = 1
 
     else:
         raise ValueError
-
-    return seam_mask.astype('float64')
+    
+    return seam_mask
 
 def shrink(seam_mask, img, mode):
     mode = mode.split()[0]
@@ -115,13 +114,13 @@ def shrink(seam_mask, img, mode):
             
     return result
 
-def seam_carve(img, mode, mask):
-    if(mask is None):
-        mask = np.zeros((img.shape[0], img.shape[1]), dtype='int8')
-
-    seam_matrix, strides = get_seam_matrix(get_e_img(get_y_img(img), mask))
+def seam_carve(img, mode, mask=None):
+    y_img = get_y_img(img)
+    e_img = get_e_img(y_img)
+    seam_matrix, strides = get_seam_matrix(e_img, mode)
     seam_mask = get_seam_mask(seam_matrix, strides, mode)
     
     result = shrink(seam_mask, img, mode)
+            
     
     return result, mask, seam_mask

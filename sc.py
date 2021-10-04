@@ -1,4 +1,61 @@
 import numpy as np
+import itertools
+
+def get_y_img(raw_img):
+    h, w, c = raw_img.shape
+    y_img = np.zeros((h, w), dtype='float64')
+    
+    xs, ys = np.arange(h), np.arange(w)
+    for x, y in itertools.product(xs, ys):
+        y_img[x, y] = np.dot(raw_img[x, y], np.array([0.299, 0.587, 0.114]))
+    
+    return y_img.astype('float64')
+
+def get_e_img(y_img, mask):
+    h, w = y_img.shape
+    xs, ys = np.arange(1, w + 1), np.arange(1, h + 1)
+    e_img = np.zeros((h + 2, w + 2), dtype='float64')
+    img = np.pad(y_img, pad_width=1, mode='edge')
+    
+    for x, y in itertools.product(xs, ys):
+        dx = img[y + 1, x] - img[y - 1, x]
+        dy = img[y, x + 1] - img[y, x - 1]
+        e_img[y, x] = np.sqrt(dx*dx + dy*dy)
+
+    e_img = e_img[1:-1, 1:-1]
+    e_img += mask * (h * w * 256.0)
+    
+    return e_img.astype('float64')
+
+def get_seam_matrix(y_img, mode='horizontal shrink'):
+    h, w = y_img.shape
+    xs, ys = np.arange(1, w + 1), np.arange(1, h + 1)
+    result = np.pad(y_img, pad_width=1, mode='constant', constant_values=(np.inf))
+    
+    mode = mode.split()[0]
+    strides = np.zeros((h, w), dtype = "int")
+    
+    if mode == 'horizontal':
+        ys = ys[1:]
+        for y in ys:
+            for x in xs:
+                stride = np.argmin(result[y - 1, x - 1 : x + 2]) - 1
+                result[y, x] += result[y - 1, x + stride]
+                strides[y - 1, x - 1] = stride
+    elif mode == 'vertical':
+        xs = xs[1:]
+        for x in xs:
+            for y in ys:
+                stride = np.argmin(result[y - 1 : y + 2, x - 1]) - 1
+                result[y, x] += result[y + stride, x - 1]
+                strides[y - 1, x - 1] = stride
+
+    else:
+        raise ValueError
+    
+    result = result[1:-1, 1:-1]
+
+    return result.astype('float64'), strides
 
 def conversion_from_RGB(img): # яркость изображения
     
@@ -24,6 +81,7 @@ def new_energy_img(energy, mask):
     energy = energy + mask * (energy.shape[0] * energy.shape[1] * 256.0)
     return(energy)
 
+
 def find_seam(img, mask):
     # a)
 
@@ -42,6 +100,13 @@ def find_seam(img, mask):
             arr[y][x] = energy[y][x] + arr[y - 1][x + shift]
             shifts[y, x] = shift
     # c)
+
+    '''
+    '''
+
+    arr, shifts = get_seam_matrix(get_e_img(get_y_img(img), mask))
+    '''
+    '''
 
     seam_mask = np.zeros((img.shape[0], img.shape[1]), dtype = "float64")
     # Поиск минимального левого элемента
@@ -65,7 +130,39 @@ def find_seam(img, mask):
         x = p
         seam_mask[y, x] = 1
 
+    seam_mask = get_seam_mask(arr, shifts)
+
     return seam_mask
+
+def get_seam_mask(seam_matrix, strides, mode='horizontal shrink'):
+
+    h, w = seam_matrix.shape
+    seam_mask = np.zeros((h, w), dtype='float64')
+
+    index_of_minimal = lambda arr : np.where(arr == np.amin(arr))[0][0]
+    mode = mode.split()[0]
+    x, y = w - 1, h - 1
+
+    if mode == 'horizontal':
+        x = index_of_minimal(seam_matrix[y, ...])
+        seam_mask[y, x] = 1
+        while y:
+            x += strides[y, x]
+            y -= 1
+            seam_mask[y, x] = 1
+
+    elif mode == 'vertical':
+        y = index_of_minimal(seam_matrix[..., x])
+        seam_mask[y, x] = 1
+        while x:
+            y += strides[y, x]
+            x -= 1
+            seam_mask[y, x] = 1
+
+    else:
+        raise ValueError
+
+    return seam_mask.astype('float64')
 
 def horizontal_shrink(img, mask):
     seam_mask = find_seam(img, mask)
@@ -86,7 +183,7 @@ def vertical_shrink(img, mask):
     final_img, new_mask, seam_mask = horizontal_shrink(np.dstack(trans_img), np.transpose(mask))
     trans_final_img = (np.transpose(final_img[ :, :, 0]), np.transpose(final_img[ :, :, 1]), np.transpose(final_img[ :, :, 2]))
     return(np.dstack(trans_final_img), np.transpose(new_mask), np.transpose(seam_mask))
-    
+
 def horizontal_expand(img, mask):
     seam_mask = find_seam(img, mask)
     new_mask = np.zeros((img.shape[0], img.shape[1] - 1), dtype = "float64")
